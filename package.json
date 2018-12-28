@@ -1,0 +1,17 @@
+{
+	"name": "know-it-all-bot",
+	"description": "Q&A chatbot for Byteball",
+	"version": "0.0.1",
+	"homepage": "https://steemit.com/byteball/@whoisterencelee/byteball-know-it-all-bot",
+	"repository": {
+		"type": "git",
+		"url": "git://github.com/whoisterencelee/know-it-all-bot.git"
+	},
+	"dependencies": {
+		"byteballcore": "git+https://github.com/byteball/byteballcore.git",
+		"headless-byteball": "git+https://github.com/byteball/headless-byteball.git",
+		"sqlite3": "^4.0.4"
+	},
+	"author": "whoisterencelee <whoisterencelee@hotmail.com>",
+	"license": "MIT"
+}
