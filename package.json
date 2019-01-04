@@ -10,6 +10,7 @@
 	"dependencies": {
 		"byteballcore": "git+https://github.com/byteball/byteballcore.git",
 		"headless-byteball": "git+https://github.com/byteball/headless-byteball.git",
+		"node-persist": "^3.0.2",
 		"sqlite3": "^4.0.4"
 	},
 	"author": "whoisterencelee <whoisterencelee@hotmail.com>",
