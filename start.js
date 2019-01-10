@@ -6,6 +6,7 @@ const db = require('byteballcore/db');
 const eventBus = require('byteballcore/event_bus');
 const validationUtils = require('byteballcore/validation_utils');
 const headlessWallet = require('headless-byteball');
+const device = require('byteballcore/device.js');
 
 const storage = require( 'node-persist' )
 
@@ -42,19 +43,20 @@ async function register( from_address ){
 	return us
 }
 
+function broadcast( q , msg ){ Object.keys( q.broadcast ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
 
 /**
  * headless wallet is ready
  */
 eventBus.once('headless_wallet_ready', () => {
 	headlessWallet.setupChatEventHandlers();
+
 	
 	/**
 	 * user pairs his device with the bot
 	 */
 	eventBus.on('paired', (from_address, pairing_secret) => {
 		// send a greeting message
-		const device = require('byteballcore/device.js');
 		device.sendMessageToDevice(from_address, 'text', "Time to incentivize Q&A! Type 'help' anytime.")
 		device.sendMessageToDevice(from_address, 'text', help() )
 		register( from_address )
@@ -70,10 +72,6 @@ eventBus.once('headless_wallet_ready', () => {
 
 		var us = await register( from_address )
 
-		const device = require('byteballcore/device.js');
-
-		console.log( "received command " + command )
-
 		if( command == "help" ) device.sendMessageToDevice( from_address , 'text' , help() )
 		else if( command == "boost" ){
 
@@ -82,68 +80,79 @@ eventBus.once('headless_wallet_ready', () => {
 
 			// bot sends text to more random sets of saved addresses based on boost 
 
+		} else if( validationUtils.isValidAddress( text ) ){
+
+			us.payaddress = text
+			userstate.setItem( from_address , us )
+			device.sendMessageToDevice( from_address , 'text' , "Saved address for payment" )
+
 		} else if( /^@/.test( text ) ){  // Answers
 
-			console.log("Answer received" )
-
 			var ans = text.match( /^@(\d*)\s*(.+)/ )
-			if( !ans || ans.length < 3 ){ device.sendMessageToDevice( from_address , 'text' , "Answer must be formatted as '@<question number> answer text'"  ); return }
+			if( !ans || ans.length < 3 ){ device.sendMessageToDevice( from_address , 'text' , "Answer format '@<question number> answer_text'"  ); return }
 
+			// TODO handle votes
+			
 			cqid = ans[ 1 ].length > 0 ? ans[ 1 ] : "TODO implement recent question lookup"
 
 			var q = await questions.getItem( cqid )
 
-			if( q == undefined ) device.sendMessageToDevice( from_address , 'text ' , "Cannot answer question @" + cqid )
+			if( q == undefined ) device.sendMessageToDevice( from_address , 'text ' , "No question @" + cqid )
 			else{
 
-				console.log( "answering question @" + cqid )
-				//q.answers[ from_address ] 
+				q.answers.push( { text : ans[ 2 ] , by : from_address } )
+				questions.setItem( cqid , q )
+
+				var choices = ""
+				q.answers.forEach( ( ans , n ) => { choices += "\nAnswer: " + ans.text + "[< vote for this](command:@" + cqid + "#" + n + ")" })
+
+				// TODO create contract
+				
+				broadcast( q , "New Answer for Question :\n" + q.text
+					+ choices
+					+ "\n [submit a different answer](suggest-command:@" + cqid + " )" )
 
 			}
 
 		} else {  // Question
 
-			if( us.asked++ ) device.sendMessageToDevice( from_address , 'text' , "Before asking another question, lets wait for the answers for your question :\n" ) // TODO display time waiting
+			if( us.asked ) device.sendMessageToDevice( from_address , 'text' , "Before asking another question, lets wait for the answers for your question :\n" ) // TODO display time waiting
 			else { 
 
-				var cqid = ++qid
+				var cqid = ( ++qid ).toString()
 				questions.setItem( "_qid" , qid ) // TODO maybe write every 1000
 
 				var q = {
 					text : text ,
-					asking : {} ,
+					broadcast : {} ,
 					answers : [] ,
 					active: true ,
 					boost : 0 ,
 					time : ( new Date() ).getTime()
 					}
 
-				q.asking[ from_address ] = []
 
 				// bot sends text to random sets of addresses including the questioner
 				// so that the questioner will also get all the answers and also get to vote
-				while( Object.keys( q.asking ).length < ( init_reach * users.length ) ){
 
-					q.asking[ users[ Math.floor( Math.random() * users.length ) ] ] = []
+				q.broadcast[ from_address ] = []
+
+				while( Object.keys( q.broadcast ).length < ( init_reach * users.length ) ){
+
+					q.broadcast[ users[ Math.floor( Math.random() * users.length ) ] ] = []
 
 				}
 
-				questions.setItem( cqid.toString() , q )
+				questions.setItem( cqid , q )
+				us.asked = cqid
+				userstate.setItem( from_address , us )
 
-				Object.keys( q.asking ).forEach( to_address => {
-
-					us.answering.push( cqid.toString() )
-					userstate.setItem( to_address , us )
-
-					console.log( "sending question to " + to_address )
-					device.sendMessageToDevice( to_address , 'text' , "New Question:\n" + text 
-						+ "\n [submit an answer](suggest-command:@" + cqid + " )" )
+				broadcast( q , "New Question:\n" + text + "\n [submit an answer](suggest-command:@" + cqid + " )" )
 						
-				})
-
-
 			}
 		}
+
+		return device.sendMessageToDevice( from_address , 'text' , help() )
 
 	});
 
