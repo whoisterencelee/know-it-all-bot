@@ -29,16 +29,6 @@ await questions.init()
 var qid = await questions.getItem( "_qid" )
 if( qid === undefined ) qid = 0
 
-/* TODO Not sure if address creation has a limit, is YES implement address pool
-var pool = await questions.getItem( "_pool" )
-if( pool === undefined ){
-	headlessWallet.issueNextMainAddress( address => { 
-		pool = address
-		questions.setItem( "_pool" , address )
-	}
-}
-*/
-
 await userstate.init()
 var users = await userstate.keys()
 console.log( "Number of users " + users.length )
@@ -81,23 +71,29 @@ var composer_callbacks = composer.getSavingCallbacks({
 	}
 });
 
-function payvoters( q , n ){
+async function payvoters( q , win ){
 
-	var paying = []
-
-	Object.entries( q.voters ).forEach( async function( d , v ){ 
-		if( v == n ){
-			var registeredpayaddress = await userstate.getItem( d ).payaddress 
-			if( registeredpayaddress ) paying.push( { address : registerpayaddress } )
-		}
+	var winners = []
+	Object.entries( q.voters ).forEach( element => { 
+		var user = element[ 0 ] , vote = element[ 1 ]
+		if( vote == win ) winners.push( user )
 	})
 
-	var fairpayout = Math.floor( ( q.bounty - txfee ) / paying.length )
+	var paying = []
+	var wl = winners.length
+	for( var i = 0 ; i < wl ; i++ ){
+		var user = await userstate.getItem( winners[ i ] )
+		if( user && user.payaddress ) paying.push( { address : user.payaddress } )
+	}
+
+	var fairpayout = Math.floor( ( q.bounty - 2 * txfee ) / paying.length ) // also the txfee for the change?
+	console.log( "fairpayout " + fairpayout )
 
 	paying.forEach( p => p.amount = fairpayout )
 
 	paying.unshift( { address : q.address , amount : 0 } ) // the change
 
+	console.log( "paying " + JSON.stringify( paying ) )
 	composer.composePaymentJoint( [ q.address ], paying , headlessWallet.signer , composer_callbacks )
 
 }
