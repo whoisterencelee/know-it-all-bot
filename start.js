@@ -7,6 +7,8 @@ const eventBus = require('byteballcore/event_bus');
 const validationUtils = require('byteballcore/validation_utils');
 const headlessWallet = require('headless-byteball');
 const device = require('byteballcore/device.js');
+const composer = require('byteballcore/composer.js');
+const network = require('byteballcore/network.js');
 
 const storage = require( 'node-persist' )
 
@@ -19,7 +21,7 @@ var max_reach = 50
 var ttl = 10 // question time to live in hours
 var power = 2
 var txfee = 512 // minimum transaction fee affects minimum bounty
-var payout = 512 // minimum payout
+var payout = 512 // minimum payout per voter
 
 async function start(){
 
@@ -27,7 +29,7 @@ await questions.init()
 var qid = await questions.getItem( "_qid" )
 if( qid === undefined ) qid = 0
 
-/*
+/* TODO Not sure if address creation has a limit, is YES implement address pool
 var pool = await questions.getItem( "_pool" )
 if( pool === undefined ){
 	headlessWallet.issueNextMainAddress( address => { 
@@ -64,22 +66,69 @@ async function register( from_address ){
 	return us
 }
 
-function countvote( q , answer ){
+function onError( err ){ throw err }
+
+// from headless_byteball/play/create_payment.js
+var composer_callbacks = composer.getSavingCallbacks({
+	ifNotEnoughFunds: onError,
+	ifError: onError,
+	/*      preCommitCb: function (conn, objJoint, handle){ //In this optional callback you can add SQL queries to be executed atomically with the payment
+						conn.query("UPDATE my_table SET status='paid' WHERE transaction_id=?",[transaction_id]);                      
+						handle();                                                                                                     
+					},*/                                                                                                                  
+	ifOk: function(objJoint){
+		network.broadcastJoint(objJoint);
+	}
+});
+
+function payvoters( q , n ){
+
+	var paying = []
+
+	Object.entries( q.voters ).forEach( async function( d , v ){ 
+		if( v == n ){
+			var registeredpayaddress = await userstate.getItem( d ).payaddress 
+			if( registeredpayaddress ) paying.push( { address : registerpayaddress } )
+		}
+	})
+
+	var fairpayout = Math.floor( ( q.bounty - txfee ) / paying.length )
+
+	paying.forEach( p => p.amount = fairpayout )
+
+	paying.unshift( { address : q.address , amount : 0 } ) // the change
+
+	composer.composePaymentJoint( [ q.address ], paying , headlessWallet.signer , composer_callbacks )
+
+}
+
+function countvote( q , n , v ){
 	
-	if( answer && answer.votes > ( Object.keys( q.voters ).length / power ) ){ // TODO fairer voting system
+	if( typeof n == "number" && typeof v == "number" &&  v > ( Object.keys( q.voters ).length / power ) ){ // TODO fairer voting system
+
 		q.active = false
 		
-		broadcast( q , "Question Answered: " + q.text + "Best Answer: " + answer.text )
+		broadcast( q , "Question Answered: " + q.text + "Best Answer: " + q.answers[ n ].text )
+
+		payvoters( q , n )
 
 	} else if ( q.time < ( ( new Date() ).getTime() - ( ttl * 1000 * 60 * 60 ) ) ){ // time's up
+
 		q.active = false
 
-		var best = { votes : 0 }
-		q.answers.forEach( ans => { if( ans.votes > best.votes ) best = ans } ) // if votes are the same, earlier answer wins
-			
-		broadcast( q , "Question Time's Up: " + q.text + "Best Answer: " + best.text )
+		var best = { votes : 0 } , bestn = -1
+		q.answers.forEach( ( ans , n ) => { if( ans.votes > best.votes ){ best = ans ; bestn = n } }) // if votes are the same, earlier answer wins
+
+		if( bestn < 0 ) broadcast( q , "Question Time's Up, but received no answer : " + q.text + "\nMaybe submit the question again" )
+		else{
+			broadcast( q , "Question Time's Up: " + q.text + "Best Answer: " + best.text )
+
+			payvoters( q , bestn )
+		}
 	}
 }
+
+function minpayout( q ){ return Object.keys( q.voters ).length * payout + txfee * 2 }
 
 function send( address , msg ){ device.sendMessageToDevice( address , 'text' , msg ) }
 function broadcast( q , msg ){ Object.keys( q.voters ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
@@ -119,22 +168,26 @@ eventBus.once('headless_wallet_ready', () => {
 
 		} else if( /^bounty/.test( command ) ){
 
-			var bounty = command.match( /^bounty\s*@(\d*)\s(\d+)/ )
-			if( !bounty || bounty.length < 3 ){ send( from_address , "Bounty format 'bounty @<question number> <amount>'" ); return } 
+			var arg = command.match( /^bounty\s*@(\d*)\s(\d+)/ )
+			if( !arg || arg.length < 3 ){ send( from_address , "Bounty format 'bounty @<question number> <amount>'" ); return } 
 
-			var cqid = ans[ 1 ].length > 0 ? ans[ 1 ] : "TODO implement recent question lookup"
+			var cqid = arg[ 1 ].length > 0 ? arg[ 1 ] : "TODO implement recent question lookup"
 
 			var q = await questions.getItem( cqid )
 
 			if( !q ){ send( from_address , 'text' , "Please submit a question first before using bounty"  ); return }
 			if( !q.active ){ send( from_address , "This question is no longer active" ); return }
+			if( ( q.bounty + arg[ 2 ] ) < minpayout( q ) ){ send( from_address , "Bounty amount too small, increase above " + minpayout( q ) ); return }
 
-			if( !q.address ) headlessWallet.issueNextMainAddress( address => q.address = address )
-				
-			send( from_address , "[Pay Bounty @" + cpid + "](byteball:" 
-				+ q.address + "?amount=" + ( Object.keys( q.voters ).length * ( txfee + payout ) ) + ")" )
+			if( !q.address ){
+				headlessWallet.issueNextMainAddress( address => {
+					q.address = address 
+					questions.setItem( cqid , q )
+					send( from_address , "[Pay Bounty @" + cqid + "](byteball:" + q.address + "?amount=" + arg[ 2 ] + ")" )
+				})
+			} else send( from_address , "[Pay Bounty @" + cqid + "](byteball:" + q.address + "?amount=" + arg[ 2 ] + ")" )
 
-			questions.setItem( cpid , q )
+			pending.push( { cqid : cqid , amt : arg[ 2 ] , q : q } )
 
 		} else if( /^promote/.test( command ) ){ // TODO pay to increase number of voters or to other places
 			
@@ -160,15 +213,15 @@ eventBus.once('headless_wallet_ready', () => {
 				if( validvote == undefined ) send( from_address , "You don't have voting right to @" + cqid )
 				else {
 
-					var vote = parseInt( ans[ 2 ].match( /^#(\d+)/ )[ 1 ] )
-					if( vote > -1 && vote < q.answers.length ){
+					var which = parseInt( ans[ 2 ].match( /^#(\d+)/ )[ 1 ] )
+					if( which > -1 && which < q.answers.length ){
 
 						if( validvote != -1 && q.answers[ validvote ].votes > 0 ) q.answers[ validvote ].votes-- // allow vote change
-						var count = ++q.answers[ vote ].votes
-						q.voters[ from_address ] = vote
-						send( from_address , "Vote accepted for answer : " + q.answers[ vote ].text )
+						var count = ++q.answers[ which ].votes
+						q.voters[ from_address ] = which
+						send( from_address , "Vote accepted for answer : " + q.answers[ which ].text )
 
-						countvote( q , q.answers[ vote ] )
+						countvote( q , which , count )
 
 						questions.setItem( cqid , q )
 					}
@@ -182,11 +235,15 @@ eventBus.once('headless_wallet_ready', () => {
 				var choices = ""
 				q.answers.forEach( ( ans , n ) => { choices += "\nAnswer: " + ans.text + "[ < vote for this](command:@" + cqid + "#" + n + ")" })
 
-				// TODO create contract
+				// TODO create contract for more decentralization
 				
-				broadcast( q , "New Answer to Question :\n" + q.text
+				var bounty = minpayout( q )
+				if( q.bounty > bounty ) bounty = " [add more incentive](suggest-command:bounty @" + cqid + " )"
+				else bounty = " [incentivize this question](command:bounty @" + cqid + " " + bounty + " )"
+
+				broadcast( q , "new answer to question :\n" + q.text
 					+ choices
-					+ "\n Bounty : " + q.bounty + " [add more incentive](command:bounty @" + cqid + " )"
+					+ "\n Bounty : " + q.bounty + bounty
 					+ "\n [submit a different answer](suggest-command:@" + cqid + " )" )
 
 			}
@@ -233,7 +290,7 @@ eventBus.once('headless_wallet_ready', () => {
 			// TODO start setInterval
 
 			broadcast( q , "New Question:\n" + text 
-				+ "\n [incentivize this question](command:bounty @" + cqid + " )"
+				+ "\n [incentivize this question](command:bounty @" + cqid + " " + minpayout( q ) + " )"
 				+ "\n [submit an answer](suggest-command:@" + cqid + " )" )
 					
 		}
@@ -246,13 +303,46 @@ eventBus.once('headless_wallet_ready', () => {
 /**
  * user pays to the bot
  */
+var pending = [] // TODO how to clear overtime pending? maybe when question goes inactive
+
 eventBus.on('new_my_transactions', (arrUnits) => {
 	// handle new unconfirmed payments
 	// and notify user
 	
-//	const device = require('byteballcore/device.js');
-//	device.sendMessageToDevice(device_address_determined_by_analyzing_the_payment, 'text', "Received your payment");
-});
+	db.query("SELECT address, amount, asset FROM outputs WHERE unit IN (?)", [arrUnits], rows => {
+		rows.forEach( row => {
+
+			if( row.asset === null ){
+
+				var remove = pending.findIndex( p => {
+						var cqid = p.cqid , amt = p.amt , q = p.q
+						
+						if( q.address == row.address && amt == row.amount ){
+
+							q.bounty += row.amount
+							questions.setItem( cqid , q )
+
+							var choices = ""
+							q.answers.forEach( ( ans , n ) => { choices += "\nAnswer: " 
+									+ ans.text + "[ < vote for this](command:@" + cqid + "#" + n + ")" })
+
+							broadcast( q , "New Bounty :\n" + q.text
+								+ choices
+								+ "\nBounty : " + q.bounty + " [add more incentive](suggest-command:bounty @" + cqid + " )"
+								+ "\n [submit a different answer](suggest-command:@" + cqid + " )" )
+
+							return true
+						}
+						return false
+					})
+
+				if( remove > -1 ) pending.splice( remove , 1 )
+
+			}
+
+		})
+	})
+})
 
 /**
  * payment is confirmed
