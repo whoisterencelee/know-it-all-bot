@@ -13,7 +13,13 @@ const storage = require( 'node-persist' )
 var questions = storage.create( { dir : './questions' } )
 var userstate = storage.create( { dir : './users' } )
 
+// Experiment and Adjust
 var init_reach = 1
+var max_reach = 50
+var ttl = 10 // question time to live in hours
+var power = 2
+var txfee = 512 // minimum transaction fee affects minimum bounty
+var payout = 512 // minimum payout
 
 async function start(){
 
@@ -21,30 +27,58 @@ await questions.init()
 var qid = await questions.getItem( "_qid" )
 if( qid === undefined ) qid = 0
 
+/*
+var pool = await questions.getItem( "_pool" )
+if( pool === undefined ){
+	headlessWallet.issueNextMainAddress( address => { 
+		pool = address
+		questions.setItem( "_pool" , address )
+	}
+}
+*/
+
 await userstate.init()
 var users = await userstate.keys()
 console.log( "Number of users " + users.length )
-//TODO adjust init_reach based on number of users HERE
-
+if( users.length > 50 ) init_reach = init_reach * max_reach / users.length //TODO adjust init_reach based on number of users
 
 function help(){
-	return "Pose a question to real people."
-	+ "\nGet paid to answer questions by inserting your address using (...)"
+	return "Pose a Question to real people."
+	+ "\nGet paid to answer and vote on questions by inserting your address using (...)"
+	+ "\nQuestion is sent randomly to " + ( init_reach * users.length ).toFixed() + " people."
+	+ "\nAnyone can add bounty to a question."
+	+ "\nBounty is split evenly to registered voters of the best answer,"
+	+ "\nwhich is an answer with 1 / " + power + " of voters"
+	+ "\nor the highest voted answer after " + ttl + " hours."
+	+ "\nVoters can change their vote in that time."
+	+ "\nLet start by asking a question."
 }
 
 async function register( from_address ){
 	var us = await userstate.getItem( from_address )
-	console.log( "terence here " + ( typeof us ) + ( us == undefined ) )
 	if( us == undefined ){
-		us = { asked : 0 , answering : [] }
+		us = { asked : null , answering : [] }
 		userstate.setItem( from_address , us )
 		users.push( from_address )
 	}
 	return us
 }
 
-function countvote( q ){
+function countvote( q , answer ){
+	
+	if( answer && answer.votes > ( Object.keys( q.voters ).length / power ) ){ // TODO fairer voting system
+		q.active = false
+		
+		broadcast( q , "Question Answered: " + q.text + "Best Answer: " + answer.text )
 
+	} else if ( q.time < ( ( new Date() ).getTime() - ( ttl * 1000 * 60 * 60 ) ) ){ // time's up
+		q.active = false
+
+		var best = { votes : 0 }
+		q.answers.forEach( ans => { if( ans.votes > best.votes ) best = ans } ) // if votes are the same, earlier answer wins
+			
+		broadcast( q , "Question Time's Up: " + q.text + "Best Answer: " + best.text )
+	}
 }
 
 function send( address , msg ){ device.sendMessageToDevice( address , 'text' , msg ) }
@@ -56,7 +90,6 @@ function broadcast( q , msg ){ Object.keys( q.voters ).forEach( to_address => { 
 eventBus.once('headless_wallet_ready', () => {
 	headlessWallet.setupChatEventHandlers();
 
-	
 	/**
 	 * user pairs his device with the bot
 	 */
@@ -84,24 +117,40 @@ eventBus.once('headless_wallet_ready', () => {
 			userstate.setItem( from_address , us )
 			device.sendMessageToDevice( from_address , 'text' , "Saved address for payment" )
 
-		} else if( command == "bounty" ){
+		} else if( /^bounty/.test( command ) ){
 
-			var q = await questions.getItem( from_address )
-			if( !q ) device.sendMessageToDevice( from_address , 'text' , "Please submit a question first before using bounty"  )
+			var bounty = command.match( /^bounty\s*@(\d*)\s(\d+)/ )
+			if( !bounty || bounty.length < 3 ){ send( from_address , "Bounty format 'bounty @<question number> <amount>'" ); return } 
 
-			// bot sends text to more random sets of saved addresses based on boost 
+			var cqid = ans[ 1 ].length > 0 ? ans[ 1 ] : "TODO implement recent question lookup"
 
-		} else if( command == "promote" ){
+			var q = await questions.getItem( cqid )
 
+			if( !q ){ send( from_address , 'text' , "Please submit a question first before using bounty"  ); return }
+			if( !q.active ){ send( from_address , "This question is no longer active" ); return }
+
+			if( !q.address ) headlessWallet.issueNextMainAddress( address => q.address = address )
+				
+			send( from_address , "[Pay Bounty @" + cpid + "](byteball:" 
+				+ q.address + "?amount=" + ( Object.keys( q.voters ).length * ( txfee + payout ) ) + ")" )
+
+			questions.setItem( cpid , q )
+
+		} else if( /^promote/.test( command ) ){ // TODO pay to increase number of voters or to other places
+			
+			// bot sends question to more random sets of saved addresses based on boost 
+			send( from_address , "promote command not yet implemented" )
 
 		} else if( /^@/.test( text ) ){  // Answers and Votes
 
 			var ans = text.match( /^@(\d*)\s*(.+)/ )
 			if( !ans || ans.length < 3 ){ device.sendMessageToDevice( from_address , 'text' , "Answer format '@<question number> answer_text' or Vote format '@<question number>#<answer index>'"  ); return }
 
-			cqid = ans[ 1 ].length > 0 ? ans[ 1 ] : "TODO implement recent question lookup"
+			var cqid = ans[ 1 ].length > 0 ? ans[ 1 ] : "TODO implement recent question lookup"
 
 			var q = await questions.getItem( cqid )
+
+			if( !q.active ){ send( from_address , "This question is no longer active" ); return }
 
 			if( q == undefined ) device.sendMessageToDevice( from_address , 'text ' , "No question @" + cqid )
 			else if( /^#\d+/.test( ans[ 2 ] ) ){ // vote
@@ -115,9 +164,11 @@ eventBus.once('headless_wallet_ready', () => {
 					if( vote > -1 && vote < q.answers.length ){
 
 						if( validvote != -1 && q.answers[ validvote ].votes > 0 ) q.answers[ validvote ].votes-- // allow vote change
-						q.answers[ vote ].votes++
+						var count = ++q.answers[ vote ].votes
 						q.voters[ from_address ] = vote
-						send( from_address , "Voting for answer : " + q.answers[ vote ].text )
+						send( from_address , "Vote accepted for answer : " + q.answers[ vote ].text )
+
+						countvote( q , q.answers[ vote ] )
 
 						questions.setItem( cqid , q )
 					}
@@ -133,48 +184,58 @@ eventBus.once('headless_wallet_ready', () => {
 
 				// TODO create contract
 				
-				broadcast( q , "New Answer for Question :\n" + q.text
+				broadcast( q , "New Answer to Question :\n" + q.text
 					+ choices
+					+ "\n Bounty : " + q.bounty + " [add more incentive](command:bounty @" + cqid + " )"
 					+ "\n [submit a different answer](suggest-command:@" + cqid + " )" )
 
 			}
 
 		} else {  // Question
 
-			if( us.asked ) device.sendMessageToDevice( from_address , 'text' , "Before asking another question, lets wait for the answers for your question :\n" ) // TODO display time waiting
-			else { 
+			if( us.asked ){
+				var q = await questions.getItem( us.asked )
+				if( q.active ){ 
+					send( from_address , "Before asking another question, lets wait for the answers for your last question.\n" ) // TODO display remaining time
+					return
+				}
+			}
 
-				var cqid = ( ++qid ).toString()
-				questions.setItem( "_qid" , qid ) // TODO maybe write every 1000
+			var cqid = ( ++qid ).toString()
+			questions.setItem( "_qid" , qid ) // TODO maybe write every 1000
 
-				var q = {
-					text : text ,
-					voters : {} , // TODO reset when done
-					answers : [] ,
-					active: true ,
-					bounty : 0 ,
-					promote : 0 ,
-					time : ( new Date() ).getTime()
-					}
-
-				// bot sends text to random sets of addresses including the questioner
-				// so that the questioner will also get all the answers and also get to vote
-
-				q.voters[ from_address ] = -1
-
-				while( Object.keys( q.voters ).length < ( init_reach * users.length ) ){
-
-					q.voters[ users[ Math.floor( Math.random() * users.length ) ] ] = -1
-
+			var q = {
+				text : text ,
+				voters : {} , // TODO reset when done to remove all user data
+				answers : [] ,
+				active: true ,
+				bounty : 0 ,
+				address : null ,
+				promote : 0 ,
+				time : ( new Date() ).getTime()
 				}
 
-				questions.setItem( cqid , q )
-				us.asked = cqid
-				userstate.setItem( from_address , us )
+			// bot sends text to random sets of addresses including the questioner
+			// so that the questioner will also get all the answers and also get to vote
 
-				broadcast( q , "New Question:\n" + text + "\n [submit an answer](suggest-command:@" + cqid + " )" )
-						
+			q.voters[ from_address ] = -1
+
+			while( Object.keys( q.voters ).length < ( init_reach * users.length ) ){
+
+				q.voters[ users[ Math.floor( Math.random() * users.length ) ] ] = -1
+
 			}
+
+			questions.setItem( cqid , q )
+			us.asked = cqid
+			userstate.setItem( from_address , us )
+
+			// TODO start setInterval
+
+			broadcast( q , "New Question:\n" + text 
+				+ "\n [incentivize this question](command:bounty @" + cqid + " )"
+				+ "\n [submit an answer](suggest-command:@" + cqid + " )" )
+					
 		}
 
 	});
