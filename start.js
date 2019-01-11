@@ -43,7 +43,12 @@ async function register( from_address ){
 	return us
 }
 
-function broadcast( q , msg ){ Object.keys( q.broadcast ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
+function countvote( q ){
+
+}
+
+function send( address , msg ){ device.sendMessageToDevice( address , 'text' , msg ) }
+function broadcast( q , msg ){ Object.keys( q.voters ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
 
 /**
  * headless wallet is ready
@@ -73,38 +78,58 @@ eventBus.once('headless_wallet_ready', () => {
 		var us = await register( from_address )
 
 		if( command == "help" ) device.sendMessageToDevice( from_address , 'text' , help() )
-		else if( command == "boost" ){
-
-			var q = await questions.getItem( from_address )
-			if( !q ) device.sendMessageToDevice( from_address , 'text' , "Please submit a question first before using boost"  )
-
-			// bot sends text to more random sets of saved addresses based on boost 
-
-		} else if( validationUtils.isValidAddress( text ) ){
+		else if( validationUtils.isValidAddress( text ) ){
 
 			us.payaddress = text
 			userstate.setItem( from_address , us )
 			device.sendMessageToDevice( from_address , 'text' , "Saved address for payment" )
 
-		} else if( /^@/.test( text ) ){  // Answers
+		} else if( command == "bounty" ){
+
+			var q = await questions.getItem( from_address )
+			if( !q ) device.sendMessageToDevice( from_address , 'text' , "Please submit a question first before using bounty"  )
+
+			// bot sends text to more random sets of saved addresses based on boost 
+
+		} else if( command == "promote" ){
+
+
+		} else if( /^@/.test( text ) ){  // Answers and Votes
 
 			var ans = text.match( /^@(\d*)\s*(.+)/ )
-			if( !ans || ans.length < 3 ){ device.sendMessageToDevice( from_address , 'text' , "Answer format '@<question number> answer_text'"  ); return }
+			if( !ans || ans.length < 3 ){ device.sendMessageToDevice( from_address , 'text' , "Answer format '@<question number> answer_text' or Vote format '@<question number>#<answer index>'"  ); return }
 
-			// TODO handle votes
-			
 			cqid = ans[ 1 ].length > 0 ? ans[ 1 ] : "TODO implement recent question lookup"
 
 			var q = await questions.getItem( cqid )
 
 			if( q == undefined ) device.sendMessageToDevice( from_address , 'text ' , "No question @" + cqid )
-			else{
+			else if( /^#\d+/.test( ans[ 2 ] ) ){ // vote
 
-				q.answers.push( { text : ans[ 2 ] , by : from_address } )
+				// check if valid voter
+				var validvote = q.voters[ from_address ]
+				if( validvote == undefined ) send( from_address , "You don't have voting right to @" + cqid )
+				else {
+
+					var vote = parseInt( ans[ 2 ].match( /^#(\d+)/ )[ 1 ] )
+					if( vote > -1 && vote < q.answers.length ){
+
+						if( validvote != -1 && q.answers[ validvote ].votes > 0 ) q.answers[ validvote ].votes-- // allow vote change
+						q.answers[ vote ].votes++
+						q.voters[ from_address ] = vote
+						send( from_address , "Voting for answer : " + q.answers[ vote ].text )
+
+						questions.setItem( cqid , q )
+					}
+				}
+
+			} else { // submit new answer
+
+				q.answers.push( { text : ans[ 2 ] , votes : 0 } )
 				questions.setItem( cqid , q )
 
 				var choices = ""
-				q.answers.forEach( ( ans , n ) => { choices += "\nAnswer: " + ans.text + "[< vote for this](command:@" + cqid + "#" + n + ")" })
+				q.answers.forEach( ( ans , n ) => { choices += "\nAnswer: " + ans.text + "[ < vote for this](command:@" + cqid + "#" + n + ")" })
 
 				// TODO create contract
 				
@@ -124,22 +149,22 @@ eventBus.once('headless_wallet_ready', () => {
 
 				var q = {
 					text : text ,
-					broadcast : {} ,
+					voters : {} , // TODO reset when done
 					answers : [] ,
 					active: true ,
-					boost : 0 ,
+					bounty : 0 ,
+					promote : 0 ,
 					time : ( new Date() ).getTime()
 					}
-
 
 				// bot sends text to random sets of addresses including the questioner
 				// so that the questioner will also get all the answers and also get to vote
 
-				q.broadcast[ from_address ] = []
+				q.voters[ from_address ] = -1
 
-				while( Object.keys( q.broadcast ).length < ( init_reach * users.length ) ){
+				while( Object.keys( q.voters ).length < ( init_reach * users.length ) ){
 
-					q.broadcast[ users[ Math.floor( Math.random() * users.length ) ] ] = []
+					q.voters[ users[ Math.floor( Math.random() * users.length ) ] ] = -1
 
 				}
 
@@ -151,8 +176,6 @@ eventBus.once('headless_wallet_ready', () => {
 						
 			}
 		}
-
-		return device.sendMessageToDevice( from_address , 'text' , help() )
 
 	});
 
