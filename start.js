@@ -20,8 +20,8 @@ var init_reach = 1
 var max_reach = 50
 var ttl = 10 // question time to live in hours
 var power = 2
-var txfee = 512 // minimum transaction fee affects minimum bounty
-var payout = 512 // minimum payout per voter
+var txfee = 588 // minimum transaction fee affects minimum bounty
+var payout = 588 // minimum payout per voter
 
 async function start(){
 
@@ -86,7 +86,7 @@ async function payvoters( q , win ){
 		if( user && user.payaddress ) paying.push( { address : user.payaddress } )
 	}
 
-	var fairpayout = Math.floor( ( q.bounty - 2 * txfee ) / paying.length ) // also the txfee for the change?
+	var fairpayout = Math.floor( ( q.bounty - ( 2 * txfee ) ) / paying.length ) // also the txfee for the change?
 	console.log( "fairpayout " + fairpayout )
 
 	paying.forEach( p => p.amount = fairpayout )
@@ -124,7 +124,7 @@ function countvote( q , n , v ){
 	}
 }
 
-function minpayout( q ){ return Object.keys( q.voters ).length * payout + txfee * 2 }
+function minpayout( q ){ return ( Object.keys( q.voters ).length * payout ) + ( 2 * txfee )  }
 
 function send( address , msg ){ device.sendMessageToDevice( address , 'text' , msg ) }
 function broadcast( q , msg ){ Object.keys( q.voters ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
