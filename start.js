@@ -73,9 +73,11 @@ var composer_callbacks = composer.getSavingCallbacks({
 
 async function payvoters( q , win ){
 
+	if( q.bounty <= 0 ) return
+
 	if( q.unstable ){ 
 		broadcast( q , "waiting for bounty to become stable" )
-		setTimeout( () => { payvoters( q , win ) } , 6000 )
+		setTimeout( () => { payvoters( q , win ) } , 600000 )
 		return
 	}
 
@@ -93,7 +95,7 @@ async function payvoters( q , win ){
 
 	}
 
-	var fairpayout = Math.floor( ( q.bounty - txfee ) / paying.length ) // also the txfee for the change?
+	var fairpayout = Math.floor( ( q.bounty - ( 2 * txfee ) ) / paying.length ) // also the txfee for the change?
 
 	//send( winners[ i ] , "You have voted correctly and will be paid " + fairpayout )
 	broadcast( q , "Winning votes were paid " + fairpayout )
