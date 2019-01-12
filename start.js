@@ -73,6 +73,12 @@ var composer_callbacks = composer.getSavingCallbacks({
 
 async function payvoters( q , win ){
 
+	if( q.unstable ){ 
+		broadcast( q , "waiting for bounty to become stable" )
+		setTimeout( () => { payvoters( q , win ) } , 6000 )
+		return
+	}
+
 	var winners = []
 	Object.entries( q.voters ).forEach( element => { 
 		var user = element[ 0 ] , vote = element[ 1 ]
@@ -84,16 +90,18 @@ async function payvoters( q , win ){
 	for( var i = 0 ; i < wl ; i++ ){
 		var user = await userstate.getItem( winners[ i ] )
 		if( user && user.payaddress ) paying.push( { address : user.payaddress } )
+
 	}
 
-	var fairpayout = Math.floor( ( q.bounty - ( 2 * txfee ) ) / paying.length ) // also the txfee for the change?
-	console.log( "fairpayout " + fairpayout )
+	var fairpayout = Math.floor( ( q.bounty - txfee ) / paying.length ) // also the txfee for the change?
+
+	//send( winners[ i ] , "You have voted correctly and will be paid " + fairpayout )
+	broadcast( q , "Winning votes were paid " + fairpayout )
 
 	paying.forEach( p => p.amount = fairpayout )
 
 	paying.unshift( { address : q.address , amount : 0 } ) // the change
 
-	console.log( "paying " + JSON.stringify( paying ) )
 	composer.composePaymentJoint( [ q.address ], paying , headlessWallet.signer , composer_callbacks )
 
 }
@@ -263,6 +271,7 @@ eventBus.once('headless_wallet_ready', () => {
 				answers : [] ,
 				active: true ,
 				bounty : 0 ,
+				unstable : false ,
 				address : null ,
 				promote : 0 ,
 				time : ( new Date() ).getTime()
@@ -316,6 +325,7 @@ eventBus.on('new_my_transactions', (arrUnits) => {
 						if( q.address == row.address && amt == row.amount ){
 
 							q.bounty += row.amount
+							q.unstable = true
 							questions.setItem( cqid , q )
 
 							var choices = ""
@@ -332,8 +342,6 @@ eventBus.on('new_my_transactions', (arrUnits) => {
 						return false
 					})
 
-				if( remove > -1 ) pending.splice( remove , 1 )
-
 			}
 
 		})
@@ -346,9 +354,34 @@ eventBus.on('new_my_transactions', (arrUnits) => {
 eventBus.on('my_transactions_became_stable', (arrUnits) => {
 	// handle payments becoming confirmed
 	// and notify user
+
+	db.query("SELECT address, amount, asset FROM outputs WHERE unit IN (?)", [arrUnits], rows => {
+		rows.forEach( row => {
+
+			if( row.asset === null ){
+
+				var remove = pending.findIndex( p => {
+						var cqid = p.cqid , amt = p.amt , q = p.q
+						
+						if( q.address == row.address && amt == row.amount ){
+
+							q.bounty += row.amount
+							q.unstable = false
+							questions.setItem( cqid , q )
+
+							return true
+						}
+						return false
+					})
+
+				if( remove > -1 ) pending.splice( remove , 1 )
+
+			}
+
+		})
+	})
+
 	
-//	const device = require('byteballcore/device.js');
-//	device.sendMessageToDevice(device_address_determined_by_analyzing_the_payment, 'text', "Your payment is confirmed");
 });
 
 
