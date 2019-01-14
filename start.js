@@ -31,6 +31,17 @@ if( qid === undefined ) qid = 0
 
 await userstate.init()
 var users = await userstate.keys()
+
+function send( address , msg ){ device.sendMessageToDevice( address , 'text' , msg ) }
+function broadcast( q , msg ){ Object.keys( q.voters ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
+
+users.forEach( u => { 
+	var us = await userstate.getItem( u )
+	us.asked = null // if system reset-ed, all users should be allowed to ask questions again
+	userstate.setItem( u , us ) 
+	send( u , "System restarted" )
+}) 
+
 console.log( "Number of users " + users.length )
 if( users.length > 50 ) init_reach = init_reach * max_reach / users.length //TODO adjust init_reach based on number of users
 
@@ -49,7 +60,7 @@ function help(){
 async function register( from_address ){
 	var us = await userstate.getItem( from_address )
 	if( us == undefined ){
-		us = { asked : null , answering : [] }
+		us = { asked : null }
 		userstate.setItem( from_address , us )
 		users.push( from_address )
 	}
@@ -76,7 +87,7 @@ async function payvoters( q , win ){
 	if( q.bounty <= 0 ) return
 
 	if( q.unstable ){ 
-		broadcast( q , "waiting for bounty to become stable" )
+		// broadcast( q , "waiting for bounty to become stable" )
 		setTimeout( () => { payvoters( q , win ) } , 600000 )
 		return
 	}
@@ -114,7 +125,8 @@ function countvote( q , n , v ){
 
 		q.active = false
 		
-		broadcast( q , "Question Answered: " + q.text + "Best Answer: " + q.answers[ n ].text )
+		broadcast( q , "Question Answered:\n" + q.text 
+			+ "\nBest Answer:\n" + q.answers[ n ].text )
 
 		payvoters( q , n )
 
@@ -136,8 +148,6 @@ function countvote( q , n , v ){
 
 function minpayout( q ){ return ( Object.keys( q.voters ).length * payout ) + ( 2 * txfee )  }
 
-function send( address , msg ){ device.sendMessageToDevice( address , 'text' , msg ) }
-function broadcast( q , msg ){ Object.keys( q.voters ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
 
 /**
  * headless wallet is ready
@@ -203,15 +213,15 @@ eventBus.once('headless_wallet_ready', () => {
 		} else if( /^@/.test( text ) ){  // Answers and Votes
 
 			var ans = text.match( /^@(\d*)\s*(.+)/ )
-			if( !ans || ans.length < 3 ){ device.sendMessageToDevice( from_address , 'text' , "Answer format '@<question number> answer_text' or Vote format '@<question number>#<answer index>'"  ); return }
+			if( !ans || ans.length < 3 ){ device.sendMessageToDevice( from_address , 'text' , 
+				"Answer format '@<question number> answer_text' or Vote format '@<question number>#<answer index>'"  ); return }
 
 			var cqid = ans[ 1 ].length > 0 ? ans[ 1 ] : "TODO implement recent question lookup"
 
 			var q = await questions.getItem( cqid )
 
-			if( !q.active ){ send( from_address , "This question is no longer active" ); return }
-
 			if( q == undefined ) device.sendMessageToDevice( from_address , 'text ' , "No question @" + cqid )
+			else if( !q.active ){ send( from_address , "This question is no longer active" ); return }
 			else if( /^#\d+/.test( ans[ 2 ] ) ){ // vote
 
 				// check if valid voter
