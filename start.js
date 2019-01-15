@@ -35,13 +35,6 @@ var users = await userstate.keys()
 function send( address , msg ){ device.sendMessageToDevice( address , 'text' , msg ) }
 function broadcast( q , msg ){ Object.keys( q.voters ).forEach( to_address => { device.sendMessageToDevice( to_address , 'text' , msg ) }) }
 
-users.forEach( u => { 
-	var us = await userstate.getItem( u )
-	us.asked = null // if system reset-ed, all users should be allowed to ask questions again
-	userstate.setItem( u , us ) 
-	send( u , "System restarted" )
-}) 
-
 console.log( "Number of users " + users.length )
 if( users.length > 50 ) init_reach = init_reach * max_reach / users.length //TODO adjust init_reach based on number of users
 
@@ -154,6 +147,13 @@ function minpayout( q ){ return ( Object.keys( q.voters ).length * payout ) + ( 
  */
 eventBus.once('headless_wallet_ready', () => {
 	headlessWallet.setupChatEventHandlers();
+
+	users.forEach( async (u) => { 
+		var us = await userstate.getItem( u )
+		us.asked = null // if system reset-ed, all users should be allowed to ask questions again
+		userstate.setItem( u , us ) 
+		send( u , "System restarted" )
+	}) 
 
 	/**
 	 * user pairs his device with the bot
